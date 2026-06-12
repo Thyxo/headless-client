@@ -232,6 +232,30 @@ function getAvailablePort () {
   })
 }
 
+function waitForPort (port, { timeoutMs = 3000, intervalMs = 50 } = {}) {
+  const startedAt = Date.now()
+
+  return new Promise((resolve, reject) => {
+    function check () {
+      const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+        socket.end()
+        resolve()
+      })
+
+      socket.once('error', () => {
+        socket.destroy()
+        if (Date.now() - startedAt >= timeoutMs) {
+          reject(new Error(`Viewer did not start listening on port ${port}`))
+          return
+        }
+        setTimeout(check, intervalMs)
+      })
+    }
+
+    check()
+  })
+}
+
 function closeViewer (record, { silent = false } = {}) {
   const current = record.bot?.viewer
   const url = record.viewer?.url
@@ -263,6 +287,7 @@ async function openViewer (record) {
 
   const port = await getAvailablePort()
   mineflayerViewer(record.bot, { firstPerson: true, port })
+  await waitForPort(port)
   record.viewer = {
     active: true,
     firstPerson: true,
@@ -400,6 +425,23 @@ function sendJson (res, status, body) {
   res.end(json)
 }
 
+function escapeHtml (value) {
+  return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]))
+}
+
+function sendHtmlMessage (res, status, title, message) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' })
+  res.end(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>
+<body style="font-family:system-ui,sans-serif;margin:2rem;line-height:1.5">
+  <h1>${escapeHtml(title)}</h1>
+  <p>${escapeHtml(message)}</p>
+  <p><a href="/">Back to Bot Control</a></p>
+</body>
+</html>`)
+}
+
 async function readJson (req) {
   const chunks = []
   for await (const chunk of req) chunks.push(chunk)
@@ -425,6 +467,24 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/bots') {
       sendJson(res, 200, [...bots.values()].map(publicBot))
+      return
+    }
+
+    const viewerMatch = url.pathname.match(/^\/viewer\/([^/]+)$/)
+    if (viewerMatch && req.method === 'GET') {
+      const record = bots.get(viewerMatch[1])
+      if (!record) {
+        sendHtmlMessage(res, 404, 'Viewer not found', 'The selected bot no longer exists.')
+        return
+      }
+
+      try {
+        const viewer = await openViewer(record)
+        res.writeHead(302, { Location: viewer.url })
+        res.end()
+      } catch (err) {
+        sendHtmlMessage(res, 409, 'Viewer unavailable', err.message)
+      }
       return
     }
 
@@ -512,7 +572,7 @@ const HTML = `<!doctype html>
     .status { border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); font-size:12px; text-transform:uppercase; white-space:nowrap; }
     .status.online { color:var(--good); border-color:color-mix(in srgb, var(--good), transparent 55%); }
     a { color:var(--accent); }
-    button { border:0; border-radius:6px; padding:10px 12px; font-weight:800; cursor:pointer; color:#071014; background:var(--accent); }
+    button, .button-link { border:0; border-radius:6px; padding:10px 12px; font-weight:800; cursor:pointer; color:#071014; background:var(--accent); font-size:14px; line-height:normal; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; }
     button.stop { background:var(--bad); color:#190707; }
     button.start { background:var(--good); }
     button.ghost { background:#252c33; color:var(--text); }
@@ -616,7 +676,7 @@ const HTML = `<!doctype html>
         : '<div class="meta">Viewer starts on demand when this bot is online.</div>'
       return '<article class="bot">' +
         '<div class="top"><div class="identity"><img class="hero-face" src="' + headUrl(bot.config.avatar, 64) + '" alt="" onerror="this.src=\\'' + headUrl('MHF_Steve', 64) + '\\'"><div><div class="name">' + escapeHtml(bot.config.name) + '</div><div class="meta">' + escapeHtml(bot.config.username) + ' @ ' + escapeHtml(bot.config.host) + ':' + bot.config.port + '</div></div></div><span class="status ' + (online ? 'online' : '') + '">' + bot.status + '</span></div>' +
-        '<div class="actions"><button class="start" onclick="action(\\'' + bot.id + '\\', \\'start\\')">Start</button><button class="stop" onclick="action(\\'' + bot.id + '\\', \\'stop\\')">Stop</button><button onclick="openViewer(\\'' + bot.id + '\\')">' + (viewerUrl ? 'Open Viewer' : 'Start Viewer') + '</button><button class="ghost" onclick="closeViewer(\\'' + bot.id + '\\')">Close Viewer</button><button class="ghost" onclick="removeBot(\\'' + bot.id + '\\')">Delete</button></div>' +
+        '<div class="actions"><button class="start" onclick="action(\\'' + bot.id + '\\', \\'start\\')">Start</button><button class="stop" onclick="action(\\'' + bot.id + '\\', \\'stop\\')">Stop</button><a class="button-link" target="_blank" rel="noreferrer" href="/viewer/' + bot.id + '">' + (viewerUrl ? 'Open Viewer' : 'Start Viewer') + '</a><button class="ghost" onclick="closeViewer(\\'' + bot.id + '\\')">Close Viewer</button><button class="ghost" onclick="removeBot(\\'' + bot.id + '\\')">Delete</button></div>' +
         viewerMeta +
         '<div class="chat"><input id="chat-' + bot.id + '" placeholder="Send chat or command"><button onclick="chat(\\'' + bot.id + '\\')">Send</button></div>' +
         '<div class="split">' +
@@ -679,21 +739,6 @@ const HTML = `<!doctype html>
     async function action(id, name) {
       await api('/api/bots/' + id + '/' + name, { method: 'POST', body: '{}' })
       refresh()
-    }
-
-    async function openViewer(id) {
-      const tab = window.open('', '_blank', 'noopener')
-
-      try {
-        const bot = await api('/api/bots/' + id + '/viewer', { method: 'POST', body: JSON.stringify({ action: 'open' }) })
-        if (!bot.viewer?.url) throw new Error('Viewer did not start')
-        if (tab) tab.location = bot.viewer.url
-        else window.open(bot.viewer.url, '_blank', 'noopener')
-        refresh()
-      } catch (err) {
-        if (tab) tab.close()
-        alert(err.message)
-      }
     }
 
     async function closeViewer(id) {
