@@ -65,9 +65,9 @@ The app has built-in defaults, but you can override the most important settings 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `WEB_PORT` | `3000` | Local web dashboard port |
-| `MC_HOST` | `mc.freakyville.dk` | Minecraft server host |
+| `MC_HOST` | `play.example.com` | Minecraft server host |
 | `MC_PORT` | `25565` | Minecraft server port |
-| `MC_USERNAME` | Current code default | Minecraft login username or email |
+| `MC_USERNAME` | `player@example.com` | Minecraft login username or email |
 | `MC_AUTH` | `microsoft` | Auth mode, usually `microsoft` or `offline` |
 | `MC_AVATAR` | `MHF_Steve` | Avatar name or UUID shown in the dashboard |
 

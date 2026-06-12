@@ -8,9 +8,9 @@ const PORT = Number(process.env.WEB_PORT || 3000)
 
 const DEFAULT_BOT = {
   name: 'Main bot',
-  host: process.env.MC_HOST || 'mc.freakyville.dk',
+  host: process.env.MC_HOST || 'play.example.com',
   port: Number(process.env.MC_PORT || 25565),
-  username: process.env.MC_USERNAME || 'mfa18@teorien.info',
+  username: process.env.MC_USERNAME || 'player@example.com',
   avatar: process.env.MC_AVATAR || 'MHF_Steve',
   auth: process.env.MC_AUTH || 'microsoft',
   version: '1.8.9',
