@@ -12,6 +12,7 @@ The app starts a bot control server on your computer, then lets you add accounts
 - Start, stop, delete, and reconnect bots
 - Send chat messages and commands
 - Movement controls for walking, jumping, sprinting, sneaking, swinging, and using items
+- Open a live first-person bot viewer with prismarine-viewer
 - Hotbar and inventory controls
 - Simple macro runner for repeated actions
 - Optional anti-kick behavior in the code configuration
@@ -37,6 +38,8 @@ Install dependencies:
 ```powershell
 npm install
 ```
+
+`npm install` downloads and installs `mineflayer`, `prismarine-viewer`, `canvas`, and the other packages listed in `package.json`.
 
 Start the control panel:
 
@@ -100,9 +103,12 @@ You can also add or change account details directly from the web dashboard.
 3. Click **Add Account** if you want another bot profile.
 4. Set the server host, port, username, avatar, and auth mode.
 5. Click **Start** to connect the selected bot.
-6. Use the movement, chat, hotbar, inventory, and macro controls from the page.
+6. Click **Start Viewer** or **Open Viewer** if you want a live first-person view of that bot.
+7. Use the movement, chat, hotbar, inventory, and macro controls from the page.
 
 The dashboard only runs locally on `127.0.0.1`, so it is meant for use on your own machine.
+
+When a viewer is started, it opens on another local `127.0.0.1` port and stays tied to the selected bot until you close it or the bot stops.
 
 ## Macro Commands
 

@@ -1,8 +1,10 @@
 'use strict'
 
 const http = require('http')
+const net = require('net')
 const { randomUUID } = require('crypto')
 const mineflayer = require('mineflayer')
+const { mineflayer: mineflayerViewer } = require('prismarine-viewer')
 
 const PORT = Number(process.env.WEB_PORT || 3000)
 
@@ -51,6 +53,7 @@ function createBotRecord (input = {}) {
     id: randomUUID(),
     config,
     bot: null,
+    viewer: null,
     reconnectTimer: null,
     antiKickTimer: null,
     status: 'stopped',
@@ -96,6 +99,7 @@ function publicBot (record) {
     status: record.status,
     loggedIn: record.loggedIn,
     lastMessage: record.lastMessage,
+    viewer: record.viewer,
     inventory,
     logs: record.logs
   }
@@ -105,6 +109,7 @@ function startBot (record) {
   if (record.bot || record.status === 'connecting') return
 
   clearTimers(record)
+  closeViewer(record, { silent: true })
   record.status = 'connecting'
   record.loggedIn = false
   record.shouldReconnect = true
@@ -142,6 +147,7 @@ function startBot (record) {
   })
 
   bot.on('end', (reason) => {
+    closeViewer(record, { silent: true })
     record.bot = null
     record.loggedIn = false
     record.status = 'stopped'
@@ -163,6 +169,7 @@ function stopBot (record) {
   record.shouldReconnect = false
   record.status = 'stopping'
   clearTimers(record)
+  closeViewer(record, { silent: true })
 
   if (!record.bot) {
     record.status = 'stopped'
@@ -202,6 +209,68 @@ function clearTimers (record) {
   if (record.antiKickTimer) clearInterval(record.antiKickTimer)
   record.reconnectTimer = null
   record.antiKickTimer = null
+}
+
+function getAvailablePort () {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer()
+    probe.unref()
+    probe.on('error', reject)
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address()
+      if (!address || typeof address === 'string') {
+        probe.close()
+        reject(new Error('Could not allocate a local viewer port'))
+        return
+      }
+
+      probe.close((err) => {
+        if (err) reject(err)
+        else resolve(address.port)
+      })
+    })
+  })
+}
+
+function closeViewer (record, { silent = false } = {}) {
+  const current = record.bot?.viewer
+  const url = record.viewer?.url
+
+  if (current?.close) {
+    try {
+      current.close()
+    } catch (err) {
+      if (!silent) log(record, 'Viewer', `Close failed: ${err.message}`)
+    }
+  }
+
+  if (record.bot?.viewer) delete record.bot.viewer
+
+  if (record.viewer && !silent) log(record, 'Viewer', `Closed ${url}`)
+  record.viewer = null
+}
+
+async function openViewer (record) {
+  requireOnline(record)
+
+  if (!record.bot?.entity?.position) {
+    throw new Error('Viewer is not ready yet. Wait for the bot to finish spawning and try again.')
+  }
+
+  if (record.viewer?.url && record.bot?.viewer?.close) return record.viewer
+
+  closeViewer(record, { silent: true })
+
+  const port = await getAvailablePort()
+  mineflayerViewer(record.bot, { firstPerson: true, port })
+  record.viewer = {
+    active: true,
+    firstPerson: true,
+    port,
+    url: `http://127.0.0.1:${port}`
+  }
+  log(record, 'Viewer', `Started at ${record.viewer.url}`)
+  return record.viewer
 }
 
 function formatReason (reason) {
@@ -377,6 +446,10 @@ const server = http.createServer(async (req, res) => {
         if (!record.bot || !record.loggedIn) throw new Error('Bot is not online')
         record.bot.chat(String(body.message || ''))
         log(record, 'You', body.message || '')
+      } else if (match[2] === 'viewer') {
+        const body = await readJson(req)
+        if (String(body.action || 'open').toLowerCase() === 'close') closeViewer(record)
+        else await openViewer(record)
       } else if (match[2] === 'control') {
         const body = await readJson(req)
         await runControl(record, body)
@@ -438,6 +511,7 @@ const HTML = `<!doctype html>
     .name { font-size:22px; }
     .status { border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); font-size:12px; text-transform:uppercase; white-space:nowrap; }
     .status.online { color:var(--good); border-color:color-mix(in srgb, var(--good), transparent 55%); }
+    a { color:var(--accent); }
     button { border:0; border-radius:6px; padding:10px 12px; font-weight:800; cursor:pointer; color:#071014; background:var(--accent); }
     button.stop { background:var(--bad); color:#190707; }
     button.start { background:var(--good); }
@@ -461,6 +535,7 @@ const HTML = `<!doctype html>
     dialog::backdrop { background:rgba(0,0,0,.65); }
     dialog form { padding:16px; display:grid; gap:12px; }
     .face-preview { display:flex; align-items:center; gap:12px; padding:10px; border:1px solid var(--line); border-radius:8px; background:#0d1014; }
+    .viewer-url { word-break:break-all; }
     @media (max-width: 900px) { header { align-items:start; flex-direction:column; } .split { grid-template-columns:1fr; } .hotbar { grid-template-columns:repeat(3, 1fr); } .chat { flex-wrap:wrap; } }
   </style>
 </head>
@@ -535,9 +610,14 @@ const HTML = `<!doctype html>
     function renderBot(bot) {
       const online = bot.status === 'online'
       const logs = bot.logs.map(l => '<p class="line">[' + l.time + '] [' + l.scope + '] ' + escapeHtml(l.message) + '</p>').join('')
+      const viewerUrl = bot.viewer?.url
+      const viewerMeta = viewerUrl
+        ? '<div class="meta viewer-url">Viewer: <a href="' + viewerUrl + '" target="_blank" rel="noreferrer">' + viewerUrl + '</a> (first-person)</div>'
+        : '<div class="meta">Viewer starts on demand when this bot is online.</div>'
       return '<article class="bot">' +
         '<div class="top"><div class="identity"><img class="hero-face" src="' + headUrl(bot.config.avatar, 64) + '" alt="" onerror="this.src=\\'' + headUrl('MHF_Steve', 64) + '\\'"><div><div class="name">' + escapeHtml(bot.config.name) + '</div><div class="meta">' + escapeHtml(bot.config.username) + ' @ ' + escapeHtml(bot.config.host) + ':' + bot.config.port + '</div></div></div><span class="status ' + (online ? 'online' : '') + '">' + bot.status + '</span></div>' +
-        '<div class="actions"><button class="start" onclick="action(\\'' + bot.id + '\\', \\'start\\')">Start</button><button class="stop" onclick="action(\\'' + bot.id + '\\', \\'stop\\')">Stop</button><button class="ghost" onclick="removeBot(\\'' + bot.id + '\\')">Delete</button></div>' +
+        '<div class="actions"><button class="start" onclick="action(\\'' + bot.id + '\\', \\'start\\')">Start</button><button class="stop" onclick="action(\\'' + bot.id + '\\', \\'stop\\')">Stop</button><button onclick="openViewer(\\'' + bot.id + '\\')">' + (viewerUrl ? 'Open Viewer' : 'Start Viewer') + '</button><button class="ghost" onclick="closeViewer(\\'' + bot.id + '\\')">Close Viewer</button><button class="ghost" onclick="removeBot(\\'' + bot.id + '\\')">Delete</button></div>' +
+        viewerMeta +
         '<div class="chat"><input id="chat-' + bot.id + '" placeholder="Send chat or command"><button onclick="chat(\\'' + bot.id + '\\')">Send</button></div>' +
         '<div class="split">' +
           '<div class="panel"><strong>Move</strong><div class="pad">' +
@@ -599,6 +679,30 @@ const HTML = `<!doctype html>
     async function action(id, name) {
       await api('/api/bots/' + id + '/' + name, { method: 'POST', body: '{}' })
       refresh()
+    }
+
+    async function openViewer(id) {
+      const tab = window.open('', '_blank', 'noopener')
+
+      try {
+        const bot = await api('/api/bots/' + id + '/viewer', { method: 'POST', body: JSON.stringify({ action: 'open' }) })
+        if (!bot.viewer?.url) throw new Error('Viewer did not start')
+        if (tab) tab.location = bot.viewer.url
+        else window.open(bot.viewer.url, '_blank', 'noopener')
+        refresh()
+      } catch (err) {
+        if (tab) tab.close()
+        alert(err.message)
+      }
+    }
+
+    async function closeViewer(id) {
+      try {
+        await api('/api/bots/' + id + '/viewer', { method: 'POST', body: JSON.stringify({ action: 'close' }) })
+        refresh()
+      } catch (err) {
+        alert(err.message)
+      }
     }
 
     async function chat(id) {
